@@ -1,0 +1,70 @@
+services:
+
+  mysql:
+    image: mysql:8.0
+    container_name: product_mysql
+    restart: unless-stopped
+
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+      MYSQL_DATABASE: ${MYSQL_DATABASE}
+      MYSQL_USER: ${MYSQL_USER}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD}
+
+    volumes:
+      - mysql_data:/var/lib/mysql
+
+    networks:
+      - backend
+
+
+  wordpress:
+    image: wordpress:latest
+    container_name: product_wordpress
+    restart: unless-stopped
+
+    depends_on:
+      - mysql
+
+    environment:
+      WORDPRESS_DB_HOST: mysql:3306
+      WORDPRESS_DB_NAME: ${MYSQL_DATABASE}
+      WORDPRESS_DB_USER: ${MYSQL_USER}
+      WORDPRESS_DB_PASSWORD: ${MYSQL_PASSWORD}
+
+    ports:
+      - "8080:80"
+
+    volumes:
+      - wordpress_data:/var/www/html
+
+    networks:
+      - backend
+
+
+  phpmyadmin:
+    image: phpmyadmin:latest
+    container_name: product_phpmyadmin
+    restart: unless-stopped
+
+    depends_on:
+      - mysql
+
+    environment:
+      PMA_HOST: mysql
+      PMA_PORT: 3306
+
+    ports:
+      - "8081:80"
+
+    networks:
+      - backend
+
+
+networks:
+  backend:
+
+
+volumes:
+  mysql_data:
+  wordpress_data:

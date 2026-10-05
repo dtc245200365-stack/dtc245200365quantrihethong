@@ -1,0 +1,12 @@
+.env
+
+# Docker data
+mysql/
+wordpress/
+
+# OS
+Thumbs.db
+.DS_Store
+
+# IDE
+.vscode/
