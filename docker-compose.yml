@@ -61,10 +61,61 @@ services:
       - backend
 
 
+  npm-db:
+    image: mariadb:10.11
+    container_name: product_npm_db
+    restart: unless-stopped
+
+    environment:
+      MYSQL_ROOT_PASSWORD: ${NPM_DB_ROOT_PASSWORD}
+      MYSQL_DATABASE: npm
+      MYSQL_USER: npm
+      MYSQL_PASSWORD: ${NPM_DB_PASSWORD}
+
+    volumes:
+      - npm_db_data:/var/lib/mysql
+
+    networks:
+      - proxy
+
+
+  npm:
+    image: jc21/nginx-proxy-manager:latest
+    container_name: product_npm
+    restart: unless-stopped
+
+    depends_on:
+      - npm-db
+
+    environment:
+      DB_MYSQL_HOST: npm-db
+      DB_MYSQL_PORT: 3306
+      DB_MYSQL_USER: npm
+      DB_MYSQL_PASSWORD: ${NPM_DB_PASSWORD}
+      DB_MYSQL_NAME: npm
+
+    ports:
+      - "80:80"
+      - "81:81"
+      - "443:443"
+
+    volumes:
+      - npm_data:/data
+      - npm_letsencrypt:/etc/letsencrypt
+
+    networks:
+      - proxy
+      - backend
+
+
 networks:
   backend:
+  proxy:
 
 
 volumes:
   mysql_data:
   wordpress_data:
+  npm_db_data:
+  npm_data:
+  npm_letsencrypt:
