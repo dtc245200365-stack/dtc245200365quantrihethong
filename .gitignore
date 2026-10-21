@@ -1,15 +1,12 @@
+# Bí mật & dữ liệu cục bộ – KHÔNG đưa lên GitHub
 .env
-
-# Docker data
-mysql/
-wordpress/
-
-# OS
-Thumbs.db
-.DS_Store
-
-# IDE
-.vscode/
-# SSL private files
+backups/*.sql
 *.key
 *.pfx
+*.pem
+
+# Dữ liệu Docker / hệ điều hành / IDE
+mysql/
+Thumbs.db
+.DS_Store
+.vscode/

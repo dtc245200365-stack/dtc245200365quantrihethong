@@ -1,121 +1,192 @@
+# =====================================================================
+# Đề 3 – Website quảng bá sản phẩm (WordPress) trên Docker Compose
+# Nginx reverse proxy + MySQL/phpMyAdmin + Prometheus/Grafana + Loki/Promtail
+# Mạng: web (có ra ngoài) | backend (internal, chứa DB) | monitoring (internal)
+# =====================================================================
+
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+
+# Hardening dùng chung: bỏ toàn bộ Linux capabilities, cấm leo quyền
+x-hardening: &hardening
+  restart: unless-stopped
+  security_opt:
+    - no-new-privileges:true
+  cap_drop:
+    - ALL
+  logging: *default-logging
+
 services:
-
-  mysql:
-    image: mysql:8.0
-    container_name: product_mysql
-    restart: unless-stopped
-
-    environment:
-      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
-      MYSQL_DATABASE: ${MYSQL_DATABASE}
-      MYSQL_USER: ${MYSQL_USER}
-      MYSQL_PASSWORD: ${MYSQL_PASSWORD}
-
+  # ---------- Sinh chứng chỉ HTTPS tự ký (chạy 1 lần, khóa riêng KHÔNG nằm trong repo) ----------
+  cert-init:
+    image: alpine/openssl
+    container_name: product_cert_init
+    restart: "no"
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        if [ ! -f /certs/server.crt ]; then
+          openssl req -x509 -nodes -newkey rsa:2048 -days 365 \
+            -keyout /certs/server.key -out /certs/server.crt \
+            -subj "/CN=localhost" \
+            -addext "subjectAltName=DNS:localhost,DNS:wordpress.local,IP:127.0.0.1"
+          chmod 644 /certs/server.crt /certs/server.key
+        fi
     volumes:
-      - mysql_data:/var/lib/mysql
+      - nginx_certs:/certs
 
-    networks:
-      - backend
-
-
-  wordpress:
-    image: wordpress:latest
-    container_name: product_wordpress
-    restart: unless-stopped
-
+  # ---------- Nginx reverse proxy (non-root, uid 101) ----------
+  nginx:
+    <<: *hardening
+    image: nginxinc/nginx-unprivileged:1.27-alpine
+    container_name: product_nginx
     depends_on:
-      - mysql
+      cert-init:
+        condition: service_completed_successfully
+      wordpress:
+        condition: service_started
+    environment:
+      PUBLIC_URL: ${PUBLIC_URL:-https://localhost}
+    ports:
+      - "${HTTP_PORT:-8080}:8080"
+      - "${HTTPS_PORT:-443}:8443"
+    volumes:
+      - ./nginx/templates:/etc/nginx/templates:ro
+      - ./nginx/proxy_wp.conf:/etc/nginx/proxy_wp.conf:ro
+      - nginx_certs:/etc/nginx/certs:ro
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://127.0.0.1:8088/stub_status || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    mem_limit: 128m
+    pids_limit: 100
+    networks:
+      - web
 
+  # ---------- WordPress (chỉ truy cập qua Nginx, không mở cổng ra máy chủ) ----------
+  wordpress:
+    <<: *hardening
+    image: wordpress:6-apache
+    container_name: product_wordpress
+    depends_on:
+      mysql:
+        condition: service_healthy
+    # Apache cần bind cổng 80 và hạ quyền xuống www-data nên giữ lại đúng các capability này
+    cap_add:
+      - CHOWN
+      - DAC_OVERRIDE
+      - FOWNER
+      - SETGID
+      - SETUID
+      - NET_BIND_SERVICE
     environment:
       WORDPRESS_DB_HOST: mysql:3306
       WORDPRESS_DB_NAME: ${MYSQL_DATABASE}
       WORDPRESS_DB_USER: ${MYSQL_USER}
       WORDPRESS_DB_PASSWORD: ${MYSQL_PASSWORD}
-
-    ports:
-      - "8080:80"
-
+      PUBLIC_URL: ${PUBLIC_URL:-https://localhost}
+      WORDPRESS_CONFIG_EXTRA: |
+        define('DISALLOW_FILE_EDIT', true);
     volumes:
       - wordpress_data:/var/www/html
+      - ./wordpress/mu-plugins:/var/www/html/wp-content/mu-plugins:ro
+      - ./wordpress/plugins/summit-gear-home:/var/www/html/wp-content/plugins/summit-gear-home:ro
+    mem_limit: 512m
+    pids_limit: 200
+    networks:
+      - web
+      - backend
 
+  # ---------- MySQL: chỉ nằm trong mạng backend (internal), không mở cổng ----------
+  mysql:
+    <<: *hardening
+    image: mysql:8.0
+    container_name: product_mysql
+    cap_add:
+      - CHOWN
+      - DAC_OVERRIDE
+      - FOWNER
+      - SETGID
+      - SETUID
+    command: ["--local-infile=0"]
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+      MYSQL_DATABASE: ${MYSQL_DATABASE}
+      MYSQL_USER: ${MYSQL_USER}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD}
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot -p$$MYSQL_ROOT_PASSWORD --silent"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    volumes:
+      - mysql_data:/var/lib/mysql
+    mem_limit: 1g
+    pids_limit: 300
     networks:
       - backend
 
-
+  # ---------- phpMyAdmin: chỉ nghe trên 127.0.0.1 của máy chủ ----------
   phpmyadmin:
-    image: phpmyadmin:latest
+    <<: *hardening
+    image: phpmyadmin:5.2-apache
     container_name: product_phpmyadmin
-    restart: unless-stopped
-
     depends_on:
-      - mysql
-
+      mysql:
+        condition: service_healthy
+    cap_add:
+      - CHOWN
+      - DAC_OVERRIDE
+      - SETGID
+      - SETUID
+      - NET_BIND_SERVICE
     environment:
       PMA_HOST: mysql
       PMA_PORT: 3306
-
     ports:
-      - "8081:80"
-
+      - "127.0.0.1:${PMA_PORT:-8081}:80"
+    mem_limit: 256m
+    pids_limit: 100
     networks:
+      - web
       - backend
 
-
-  npm-db:
-    image: mariadb:10.11
-    container_name: product_npm_db
-    restart: unless-stopped
-
-    environment:
-      MYSQL_ROOT_PASSWORD: ${NPM_DB_ROOT_PASSWORD}
-      MYSQL_DATABASE: npm
-      MYSQL_USER: npm
-      MYSQL_PASSWORD: ${NPM_DB_PASSWORD}
-
-    volumes:
-      - npm_db_data:/var/lib/mysql
-
-    networks:
-      - proxy
-
-
-  npm:
-    image: jc21/nginx-proxy-manager:latest
-    container_name: product_npm
-    restart: unless-stopped
-
+  # ---------- WP-CLI (chỉ chạy khi gọi: docker compose run --rm wpcli ...) ----------
+  wpcli:
+    image: wordpress:cli
+    container_name: product_wpcli
+    profiles: ["tools"]
+    user: "33:33"
     depends_on:
-      - npm-db
-
+      mysql:
+        condition: service_healthy
     environment:
-      DB_MYSQL_HOST: npm-db
-      DB_MYSQL_PORT: 3306
-      DB_MYSQL_USER: npm
-      DB_MYSQL_PASSWORD: ${NPM_DB_PASSWORD}
-      DB_MYSQL_NAME: npm
-
-    ports:
-      - "80:80"
-      - "81:81"
-      - "443:443"
-
+      HOME: /tmp
+      WORDPRESS_DB_HOST: mysql:3306
+      WORDPRESS_DB_NAME: ${MYSQL_DATABASE}
+      WORDPRESS_DB_USER: ${MYSQL_USER}
+      WORDPRESS_DB_PASSWORD: ${MYSQL_PASSWORD}
     volumes:
-      - npm_data:/data
-      - npm_letsencrypt:/etc/letsencrypt
-
+      - wordpress_data:/var/www/html
     networks:
-      - proxy
       - backend
 
 
 networks:
+  web:
   backend:
-  proxy:
-
+    internal: true
 
 volumes:
   mysql_data:
   wordpress_data:
-  npm_db_data:
-  npm_data:
-  npm_letsencrypt:
+  nginx_certs:
