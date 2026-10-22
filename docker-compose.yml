@@ -298,6 +298,38 @@ services:
       - web
       - monitoring
 
+  # ---------- Loki: lưu log tập trung (chỉ trong mạng monitoring, truy vấn qua Grafana) ----------
+  loki:
+    <<: *hardening
+    image: grafana/loki:3.5.0
+    container_name: product_loki
+    command: -config.file=/etc/loki/local-config.yaml
+    volumes:
+      - ./logging/loki/loki-config.yml:/etc/loki/local-config.yaml:ro
+      - loki_data:/loki
+    mem_limit: 512m
+    networks:
+      - monitoring
+
+  # ---------- Promtail: đọc log container qua Docker API (socket chỉ đọc) ----------
+  promtail:
+    image: grafana/promtail:3.5.0
+    container_name: product_promtail
+    restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    logging: *default-logging
+    command: -config.file=/etc/promtail/config.yml
+    volumes:
+      - ./logging/promtail/promtail-config.yml:/etc/promtail/config.yml:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - promtail_positions:/positions
+    depends_on:
+      - loki
+    mem_limit: 256m
+    networks:
+      - monitoring
+
 networks:
   web:
   backend:
@@ -311,3 +343,5 @@ volumes:
   nginx_certs:
   prometheus_data:
   grafana_data:
+  loki_data:
+  promtail_positions:
