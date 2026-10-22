@@ -28,8 +28,11 @@ Nginx reverse proxy (HTTPS tự ký + security headers), Prometheus + Grafana, L
 | wordpress | Website giới thiệu sản phẩm | chỉ qua Nginx |
 | mysql | Cơ sở dữ liệu | không mở ra ngoài |
 | phpmyadmin | Quản trị CSDL | http://127.0.0.1:8081 |
+| prometheus | Thu thập metrics | http://127.0.0.1:9090 |
+| grafana | Dashboard giám sát | http://127.0.0.1:3000 |
+| cadvisor, nginx-exporter, mysqld-exporter | Lấy metrics container / web server / database | chỉ trong mạng `monitoring` |
 
-(Các thành phần giám sát và log được thêm ở các phần sau.)
+(Hệ thống log tập trung được thêm ở phần sau.)
 
 ## 2. Yêu cầu
 
@@ -95,3 +98,31 @@ Kiểm tra:
 curl.exe -k -I https://localhost          # xem các security header
 curl.exe -I http://localhost:8080         # phải trả 301 sang https
 ```
+
+## 5. Giám sát bằng Prometheus + Grafana (commit 2)
+
+| Đối tượng | Nguồn metrics | Ví dụ |
+|---|---|---|
+| Container | cAdvisor | CPU, RAM, mạng theo từng container |
+| Web server | nginx-exporter (đọc `stub_status` của Nginx) | request/giây, số kết nối |
+| Database | mysqld-exporter | số kết nối, truy vấn/giây, `mysql_up` |
+
+- Cấu hình Prometheus: `monitoring/prometheus/prometheus.yml` (4 job: prometheus, cadvisor, nginx, mysql).
+- Grafana được **provisioning** từ repo nên clone về là có sẵn datasource và dashboard
+  **Summit Gear – Tổng quan hệ thống** (thư mục *Summit Gear*): `monitoring/grafana/`.
+- `mysqld-exporter` dùng tài khoản MySQL riêng `exporter` chỉ có quyền `PROCESS`, `REPLICATION CLIENT`
+  và `SELECT` trên `performance_schema` (dịch vụ `mysql-exporter-init` tự tạo, chạy lặp lại an toàn), **không dùng root**.
+- Prometheus và Grafana chỉ nghe trên `127.0.0.1`; mạng `monitoring` là mạng internal.
+
+Kiểm tra:
+1. http://127.0.0.1:9090/targets → cả 4 target ở trạng thái **UP**.
+2. http://127.0.0.1:3000 (tài khoản `GRAFANA_ADMIN_USER` / `GRAFANA_ADMIN_PASSWORD` trong `.env`) → mở dashboard *Summit Gear – Tổng quan hệ thống*.
+3. Một vài truy vấn PromQL để demo: `up`, `rate(nginx_http_requests_total[1m])`, `mysql_global_status_threads_connected`,
+   `sum by (name) (rate(container_cpu_usage_seconds_total{name=~".+"}[1m]))`.
+
+Lưu ý:
+- Mật khẩu Grafana trong `.env` chỉ áp dụng khi volume Grafana tạo lần đầu. Với volume cũ (đang là `admin/admin`), đặt lại bằng:
+  ```powershell
+  docker compose exec grafana grafana cli admin reset-admin-password "MAT_KHAU_MOI"
+  ```
+- Nếu cAdvisor không hiện tên container trên Docker Desktop (WSL2), xem lại mục *Xử lý sự cố* ở cuối file này.
