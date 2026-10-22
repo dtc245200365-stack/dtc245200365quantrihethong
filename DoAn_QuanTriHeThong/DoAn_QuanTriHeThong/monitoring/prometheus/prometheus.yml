@@ -1,0 +1,23 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]
+
+  # Container (CPU, RAM, mạng, I/O)
+  - job_name: cadvisor
+    static_configs:
+      - targets: ["cadvisor:8080"]
+
+  # Web server (Nginx): kết nối, request/giây
+  - job_name: nginx
+    static_configs:
+      - targets: ["nginx-exporter:9113"]
+
+  # Cơ sở dữ liệu (MySQL)
+  - job_name: mysql
+    static_configs:
+      - targets: ["mysqld-exporter:9104"]

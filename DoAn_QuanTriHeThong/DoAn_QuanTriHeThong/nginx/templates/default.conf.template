@@ -1,0 +1,77 @@
+# Nginx reverse proxy cho WordPress. File này được nạp qua envsubst (biến ${PUBLIC_URL}).
+server_tokens off;
+
+# Log có thêm thời gian xử lý và X-Forwarded-For để truy vấn LogQL
+log_format sg_main '$remote_addr - $remote_user [$time_local] "$request" '
+                   '$status $body_bytes_sent "$http_referer" "$http_user_agent" '
+                   '"$http_x_forwarded_for" rt=$request_time';
+
+# Chống dò mật khẩu / spam: tối đa 10 request/giây mỗi IP
+limit_req_zone $binary_remote_addr zone=perip:10m rate=10r/s;
+limit_req_zone $binary_remote_addr zone=login:10m rate=1r/s;
+
+# HTTP -> HTTPS
+server {
+    listen 8080;
+    server_name _;
+    access_log /var/log/nginx/access.log sg_main;
+    return 301 ${PUBLIC_URL}$request_uri;
+}
+
+# HTTPS (chứng chỉ tự ký do dịch vụ cert-init sinh ra)
+server {
+    listen 8443 ssl;
+    http2 on;
+    server_name _;
+    access_log /var/log/nginx/access.log sg_main;
+
+    ssl_certificate     /etc/nginx/certs/server.crt;
+    ssl_certificate_key /etc/nginx/certs/server.key;
+    ssl_protocols       TLSv1.2 TLSv1.3;
+    ssl_session_cache   shared:SSL:10m;
+    ssl_session_timeout 10m;
+
+    # ---- Security headers ----
+    # HSTS đặt ngắn (5 phút) để không "khóa" localhost trong trình duyệt khi demo.
+    add_header Strict-Transport-Security "max-age=300" always;
+    add_header X-Content-Type-Options    "nosniff" always;
+    add_header X-Frame-Options           "SAMEORIGIN" always;
+    add_header Referrer-Policy           "strict-origin-when-cross-origin" always;
+    add_header Permissions-Policy        "camera=(), microphone=(), geolocation=()" always;
+    add_header Content-Security-Policy   "frame-ancestors 'self'; base-uri 'self'; object-src 'none'" always;
+
+    client_max_body_size 20m;
+    proxy_hide_header X-Powered-By;
+
+    # Chặn các đường dẫn hay bị tấn công
+    location = /xmlrpc.php { deny all; }
+    location ~* /wp-content/uploads/.*\.php$ { deny all; }
+    location ~ /\.(?!well-known) { deny all; }
+
+    # Trang đăng nhập: giới hạn chặt hơn
+    location = /wp-login.php {
+        limit_req zone=login burst=5 nodelay;
+        include /etc/nginx/proxy_wp.conf;
+        proxy_pass http://wordpress:80;
+    }
+
+    location / {
+        limit_req zone=perip burst=30 nodelay;
+        include /etc/nginx/proxy_wp.conf;
+        proxy_pass http://wordpress:80;
+    }
+}
+
+# Cổng nội bộ cho nginx-exporter (không publish ra máy chủ)
+server {
+    listen 8088;
+    access_log off;
+    location /stub_status {
+        stub_status;
+        allow 127.0.0.1;
+        allow 10.0.0.0/8;
+        allow 172.16.0.0/12;
+        allow 192.168.0.0/16;
+        deny all;
+    }
+}
